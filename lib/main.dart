@@ -1,17 +1,29 @@
-// 路径: lib/main.dart
-// 职责: App的唯一入口，配置主题和首页。
-// [!] 这是修复了中文语言环境问题的版本
+// 路径: lib/main.dart (修改后)
 
 import 'package:flutter/material.dart';
 import 'package:my_gym_app/app/widgets/main_scaffold.dart';
-import 'package:intl/date_symbol_data_local.dart'; // 1. 导入intl库
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:my_gym_app/core/services/notification_service.dart'; // [!] 保持这个导入
+
+// [!] 不再需要导入 flutter_local_notifications
 
 void main() async {
-  // 2. 将main函数变为异步
-  // 3. 确保Flutter的Widgets绑定已经初始化
   WidgetsFlutterBinding.ensureInitialized();
-  // 4. 初始化中文的日期格式化数据
+
+  // [!] flutterLocalNotificationsPlugin.initialize(...) 这段代码已移入 NotificationService，此处不再需要。
+
   await initializeDateFormatting('zh_CN', null);
+
+  // 请求通知权限 (这个逻辑保留是好的)
+  await Permission.notification.isDenied.then((value) {
+    if (value) {
+      Permission.notification.request();
+    }
+  });
+
+  // [!] 修改这里：调用新的静态初始化方法
+  await NotificationService.initialize();
 
   runApp(const MyApp());
 }

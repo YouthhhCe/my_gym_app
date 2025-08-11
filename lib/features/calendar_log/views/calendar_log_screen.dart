@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:my_gym_app/core/services/local_storage_service.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:flutter_slidable/flutter_slidable.dart'; // 1. 导入新库
+import 'package:vibration/vibration.dart';
 
 class CalendarLogScreen extends StatefulWidget {
   const CalendarLogScreen({super.key});
@@ -52,6 +53,16 @@ class _CalendarLogScreenState extends State<CalendarLogScreen> {
         _events[day] = [event];
       }
     });
+
+    // 2. 在事件添加后，立刻给出震动反馈
+    // 检查设备是否有自定义震动强度的能力
+    if (await Vibration.hasAmplitudeControl() ?? false) {
+      // 如果有，使用一个较低的强度来表示轻微的反馈
+      Vibration.vibrate(duration: 100, amplitude: 64);
+    } else {
+      // 如果没有，就使用默认的短促震动
+      Vibration.vibrate(duration: 100);
+    }
 
     await _storageService.saveEvents(_events);
   }

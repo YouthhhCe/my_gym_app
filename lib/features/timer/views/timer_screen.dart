@@ -1,11 +1,14 @@
 // 路径: lib/features/timer/views/timer_screen.dart
 // 职责: “计时器”功能的UI界面与核心逻辑。
-// [!] 这是添加了自定义时间选择器功能的最终版本
 
 import 'dart:async';
 import 'package:flutter/cupertino.dart'; // 导入Cupertino库以使用iOS风格的组件
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:vibration/vibration.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:my_gym_app/core/services/notification_service.dart'; //自定义服务类
 
 class TimerScreen extends StatefulWidget {
   const TimerScreen({super.key});
@@ -20,6 +23,7 @@ class _TimerScreenState extends State<TimerScreen> {
   int _totalSeconds = 90;
   int _currentSeconds = 90;
   bool _isRunning = false;
+  // [!] 不再需要 final service = FlutterBackgroundService();
 
   // --- 生命周期方法 ---
   @override
@@ -30,52 +34,80 @@ class _TimerScreenState extends State<TimerScreen> {
 
   // --- 核心逻辑方法 ---
 
-  void _startPauseTimer() {
+  void _startPauseTimer() async {
     if (_isRunning) {
+      // 如果正在运行，则暂停
       _timer?.cancel();
-    } else {
-      if (_currentSeconds == 0) {
-        _currentSeconds = _totalSeconds;
-      }
-      _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        setState(() {
-          if (_currentSeconds > 0) {
-            _currentSeconds--;
-          } else {
-            _timer?.cancel();
-            _isRunning = false;
-            // TODO: 在这里添加声音和震动提醒
-          }
-        });
+      // [!] 修改这里：调用新的静态方法停止服务
+      NotificationService.stopService();
+      setState(() {
+        _isRunning = false;
       });
+    } else {
+      // 如果未运行，则开始
+      var status = await Permission.notification.status;
+      if (status.isDenied) {
+        status = await Permission.notification.request();
+      }
+
+      if (status.isGranted) {
+        if (_currentSeconds == 0) {
+          _currentSeconds = _totalSeconds;
+        }
+
+        // [!] 修改这里：调用新的静态方法启动计时器
+        NotificationService.startTimer(duration: _currentSeconds);
+
+        // UI上的计时器也同步启动
+        _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (!mounted) return;
+          setState(() {
+            if (_currentSeconds > 0) {
+              _currentSeconds--;
+            } else {
+              timer.cancel();
+              _isRunning = false;
+            }
+          });
+        });
+        setState(() {
+          _isRunning = true;
+        });
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('需要通知权限才能在后台提醒您！')));
+      }
     }
-    setState(() {
-      _isRunning = !_isRunning;
-    });
   }
 
   void _resetTimer() {
     _timer?.cancel();
+    // [!] 修改这里：调用新的静态方法停止服务
+    NotificationService.stopService();
     setState(() {
       _currentSeconds = _totalSeconds;
       _isRunning = false;
     });
   }
 
+  // _setPresetTime, _showCustomTimePicker, _formatDuration 和 build 方法都不需要修改
+  // ... (下面的所有代码都保持不变)
+
   void _setPresetTime(int seconds) {
-    _timer?.cancel();
-    setState(() {
-      _totalSeconds = seconds;
-      _currentSeconds = seconds;
-      _isRunning = false;
-    });
+    if (_isRunning) {
+      _resetTimer();
+    }
+    if (mounted) {
+      setState(() {
+        _totalSeconds = seconds;
+        _currentSeconds = seconds;
+      });
+    }
   }
 
-  // [新增] 显示自定义时间选择器的模态窗口
   void _showCustomTimePicker() {
-    // 临时存储用户在选择器上滚动到的时间
     Duration selectedDuration = Duration(seconds: _totalSeconds);
-
     showModalBottomSheet(
       context: context,
       builder: (BuildContext context) {
@@ -83,18 +115,15 @@ class _TimerScreenState extends State<TimerScreen> {
           height: 300,
           child: Column(
             children: [
-              // iOS风格的时间选择器
               Expanded(
                 child: CupertinoTimerPicker(
-                  mode: CupertinoTimerPickerMode.ms, // 显示分钟和秒
+                  mode: CupertinoTimerPickerMode.ms,
                   initialTimerDuration: selectedDuration,
                   onTimerDurationChanged: (Duration newDuration) {
-                    // 当用户滚动时，更新临时存储的时间
                     selectedDuration = newDuration;
                   },
                 ),
               ),
-              // “确定”按钮
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 child: ElevatedButton(
@@ -105,11 +134,9 @@ class _TimerScreenState extends State<TimerScreen> {
                     ),
                   ),
                   onPressed: () {
-                    // 只有当选择的时间大于0时才设置
                     if (selectedDuration.inSeconds > 0) {
                       _setPresetTime(selectedDuration.inSeconds);
                     }
-                    // 关闭底部弹窗
                     Navigator.pop(context);
                   },
                   child: const Text('确定', style: TextStyle(fontSize: 16)),
@@ -122,7 +149,6 @@ class _TimerScreenState extends State<TimerScreen> {
     );
   }
 
-  // --- 辅助方法 ---
   String _formatDuration(int totalSeconds) {
     final minutes = (totalSeconds ~/ 60).toString().padLeft(2, '0');
     final seconds = (totalSeconds % 60).toString().padLeft(2, '0');
@@ -181,7 +207,6 @@ class _TimerScreenState extends State<TimerScreen> {
     );
   }
 
-  // --- 构建UI组件的辅助方法 ---
   Widget _buildPresetButton(String text, int seconds) {
     final bool isSelected = _totalSeconds == seconds && !_isRunning;
     return ElevatedButton(
@@ -208,7 +233,7 @@ class _TimerScreenState extends State<TimerScreen> {
 
   Widget _buildAddButton() {
     return ElevatedButton(
-      onPressed: _showCustomTimePicker, // [!] 调用新创建的方法
+      onPressed: _showCustomTimePicker,
       style: ElevatedButton.styleFrom(
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
