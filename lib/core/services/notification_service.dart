@@ -1,35 +1,32 @@
 // 路径: lib/core/services/notification_service.dart
 
-import 'dart:async';
-import 'dart:ui';
-import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:vibration/vibration.dart';
+import 'package:my_gym_app/core/services/background_timer_handler.dart';
 
-/// 一个封装了所有通知和后台服务逻辑的类
 class NotificationService {
-  // --- 私有常量 ---
-  static const String _notificationChannelId = 'gym_timer_channel';
-  static const String _notificationChannelName = '健身计时器通知';
-  static const String _notificationChannelDescription = '用于显示组间休息结束的通知';
-  static const int _foregroundServiceNotificationId = 888;
-  static const int _restFinishedNotificationId = 889;
-
-  /// 全局的本地通知插件单例
+  static final FlutterBackgroundService _service = FlutterBackgroundService();
   static final FlutterLocalNotificationsPlugin _localNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
-  /// 后台服务单例
-  static final FlutterBackgroundService _backgroundService =
-      FlutterBackgroundService();
-
-  /// 静态方法：初始化服务
   static Future<void> initialize() async {
+    // [!] 核心修正点 1: 在这里统一初始化通知插件
+    // 这是主isolate的初始化
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher'); // 使用app图标
+    const DarwinInitializationSettings initializationSettingsIOS =
+        DarwinInitializationSettings();
+    const InitializationSettings initializationSettings =
+        InitializationSettings(
+          android: initializationSettingsAndroid,
+          iOS: initializationSettingsIOS,
+        );
+    await _localNotificationsPlugin.initialize(initializationSettings);
+
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
-      _notificationChannelId,
-      _notificationChannelName,
-      description: _notificationChannelDescription,
+      'gym_timer_channel',
+      '健身计时器通知',
+      description: '用于显示组间休息结束的通知',
       importance: Importance.max,
       playSound: false,
     );
@@ -40,97 +37,36 @@ class NotificationService {
         >()
         ?.createNotificationChannel(channel);
 
-    await _backgroundService.configure(
+    await _service.configure(
       androidConfiguration: AndroidConfiguration(
-        onStart: _onStart,
+        onStart: onStart,
         autoStart: false,
         isForegroundMode: true,
-        notificationChannelId: _notificationChannelId,
-        // 这里可以设置一个更通用的标题，因为它不会再变化
+        notificationChannelId: 'gym_timer_channel',
         initialNotificationTitle: '健身伴侣',
-        initialNotificationContent: '组间休息计时中...',
-        foregroundServiceNotificationId: _foregroundServiceNotificationId,
+        initialNotificationContent: '正在设定休息提醒...',
+        foregroundServiceNotificationId: 888,
       ),
       iosConfiguration: IosConfiguration(
         autoStart: false,
-        onForeground: _onStart,
-        onBackground: _onIosBackground,
+        onForeground: onStart,
+        onBackground: onIosBackground,
       ),
     );
   }
 
-  /// 静态方法：启动计时器
-  static void startTimer({required int duration}) {
-    _backgroundService.startService();
-    _backgroundService.invoke('startTimer', {'duration': duration});
+  static Future<void> scheduleTimer({required int duration}) async {
+    if (!await _service.isRunning()) {
+      await _service.startService();
+    }
+    _service.invoke('schedule', {'duration': duration});
   }
 
-  /// 静态方法：停止服务
-  static void stopService() {
-    _backgroundService.invoke('stopService');
+  static Future<void> cancelTimer() async {
+    // 即使服务可能不在运行，取消操作也应该尝试启动服务来执行
+    if (!await _service.isRunning()) {
+      await _service.startService();
+    }
+    _service.invoke('cancel');
   }
-}
-
-// --- 后台隔离区的入口点 ---
-
-@pragma('vm:entry-point')
-Future<bool> _onIosBackground(ServiceInstance service) async {
-  WidgetsFlutterBinding.ensureInitialized();
-  DartPluginRegistrant.ensureInitialized();
-  return true;
-}
-
-@pragma('vm:entry-point')
-void _onStart(ServiceInstance service) {
-  DartPluginRegistrant.ensureInitialized();
-
-  Timer? restTimer;
-
-  service.on('startTimer').listen((data) {
-    restTimer?.cancel();
-    final int durationInSeconds = (data?['duration'] as int?) ?? 0;
-
-    if (durationInSeconds <= 0) return;
-
-    int currentSeconds = durationInSeconds;
-
-    restTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
-      // 计时器仍然在后台精确运行
-      currentSeconds--;
-
-      // *******************************************************************
-      // 我们已经将 setForegroundNotificationInfo(...) 这一行彻底删除！
-      // 不再有实时的通知更新，也不会再有那个编译错误。
-      // *******************************************************************
-
-      if (currentSeconds <= 0) {
-        restTimer?.cancel();
-
-        // 倒计时结束，触发振动
-        if (await Vibration.hasVibrator() ?? false) {
-          Vibration.vibrate(pattern: [0, 500, 200, 500]);
-        }
-
-        // 倒计时结束，弹出“完成”通知
-        NotificationService._localNotificationsPlugin.show(
-          NotificationService._restFinishedNotificationId,
-          '休息结束！',
-          '准备好开始下一组训练了吗？',
-          const NotificationDetails(
-            android: AndroidNotificationDetails(
-              NotificationService._notificationChannelId,
-              NotificationService._notificationChannelName,
-            ),
-            iOS: DarwinNotificationDetails(presentAlert: true),
-          ),
-        );
-        service.stopSelf();
-      }
-    });
-  });
-
-  service.on('stopService').listen((event) {
-    restTimer?.cancel();
-    service.stopSelf();
-  });
 }

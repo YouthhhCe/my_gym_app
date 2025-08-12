@@ -1,14 +1,10 @@
 // 路径: lib/features/timer/views/timer_screen.dart
-// 职责: “计时器”功能的UI界面与核心逻辑。
 
 import 'dart:async';
-import 'package:flutter/cupertino.dart'; // 导入Cupertino库以使用iOS风格的组件
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:vibration/vibration.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:my_gym_app/core/services/notification_service.dart'; //自定义服务类
+import 'package:my_gym_app/core/services/notification_service.dart';
 
 class TimerScreen extends StatefulWidget {
   const TimerScreen({super.key});
@@ -17,94 +13,116 @@ class TimerScreen extends StatefulWidget {
   State<TimerScreen> createState() => _TimerScreenState();
 }
 
-class _TimerScreenState extends State<TimerScreen> {
-  // --- 状态变量 ---
-  Timer? _timer;
+class _TimerScreenState extends State<TimerScreen> with WidgetsBindingObserver {
+  Timer? _uiTimer;
   int _totalSeconds = 90;
   int _currentSeconds = 90;
   bool _isRunning = false;
-  // [!] 不再需要 final service = FlutterBackgroundService();
+  DateTime? _endTime;
 
-  // --- 生命周期方法 ---
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
   @override
   void dispose() {
-    _timer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _uiTimer?.cancel();
     super.dispose();
   }
 
-  // --- 核心逻辑方法 ---
-
-  void _startPauseTimer() async {
-    if (_isRunning) {
-      // 如果正在运行，则暂停
-      _timer?.cancel();
-      // [!] 修改这里：调用新的静态方法停止服务
-      NotificationService.stopService();
-      setState(() {
-        _isRunning = false;
-      });
-    } else {
-      // 如果未运行，则开始
-      var status = await Permission.notification.status;
-      if (status.isDenied) {
-        status = await Permission.notification.request();
-      }
-
-      if (status.isGranted) {
-        if (_currentSeconds == 0) {
-          _currentSeconds = _totalSeconds;
-        }
-
-        // [!] 修改这里：调用新的静态方法启动计时器
-        NotificationService.startTimer(duration: _currentSeconds);
-
-        // UI上的计时器也同步启动
-        _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (!mounted) return;
-          setState(() {
-            if (_currentSeconds > 0) {
-              _currentSeconds--;
-            } else {
-              timer.cancel();
-              _isRunning = false;
-            }
-          });
-        });
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      if (_isRunning && _endTime != null) {
+        final remaining = _endTime!.difference(DateTime.now()).inSeconds;
         setState(() {
-          _isRunning = true;
+          if (remaining > 0) {
+            _currentSeconds = remaining;
+          } else {
+            // 当我们回来时，计时器已经结束了，重置UI
+            _resetUiToDefault();
+          }
         });
-      } else {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('需要通知权限才能在后台提醒您！')));
       }
     }
   }
 
-  void _resetTimer() {
-    _timer?.cancel();
-    // [!] 修改这里：调用新的静态方法停止服务
-    NotificationService.stopService();
+  void _startTimer() {
     setState(() {
-      _currentSeconds = _totalSeconds;
-      _isRunning = false;
+      _isRunning = true;
+      if (_currentSeconds <= 0) {
+        _currentSeconds = _totalSeconds;
+      }
+      _endTime = DateTime.now().add(Duration(seconds: _currentSeconds));
+    });
+
+    NotificationService.scheduleTimer(duration: _currentSeconds);
+
+    _uiTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!_isRunning) {
+        timer.cancel();
+        return;
+      }
+
+      final remaining = _endTime?.difference(DateTime.now()).inSeconds ?? 0;
+
+      if (remaining > 0) {
+        setState(() {
+          _currentSeconds = remaining;
+        });
+      } else {
+        _resetUiToDefault();
+        timer.cancel();
+      }
     });
   }
 
-  // _setPresetTime, _showCustomTimePicker, _formatDuration 和 build 方法都不需要修改
-  // ... (下面的所有代码都保持不变)
+  void _pauseTimer() {
+    setState(() {
+      _isRunning = false;
+    });
+    _uiTimer?.cancel();
+    NotificationService.cancelTimer();
+  }
+
+  void _resetTimer() {
+    _uiTimer?.cancel();
+    NotificationService.cancelTimer();
+    _resetUiToDefault();
+  }
+
+  // 辅助函数，用于将UI重置到初始状态
+  void _resetUiToDefault() {
+    setState(() {
+      _isRunning = false;
+      _endTime = null;
+      _currentSeconds = _totalSeconds;
+    });
+  }
 
   void _setPresetTime(int seconds) {
     if (_isRunning) {
       _resetTimer();
     }
-    if (mounted) {
-      setState(() {
-        _totalSeconds = seconds;
-        _currentSeconds = seconds;
-      });
+    setState(() {
+      _totalSeconds = seconds;
+      _currentSeconds = seconds;
+    });
+  }
+
+  void _startPauseTimer() {
+    if (_isRunning) {
+      _pauseTimer();
+    } else {
+      _startTimer();
     }
   }
+
+  // ... build 相关的所有代码都无需修改 ...
 
   void _showCustomTimePicker() {
     Duration selectedDuration = Duration(seconds: _totalSeconds);
@@ -245,8 +263,10 @@ class _TimerScreenState extends State<TimerScreen> {
   }
 
   Widget _buildMainActionButton() {
-    if (_isRunning ||
-        (_currentSeconds > 0 && _currentSeconds < _totalSeconds)) {
+    bool showPauseAndReset =
+        _isRunning || (_currentSeconds > 0 && _currentSeconds < _totalSeconds);
+
+    if (showPauseAndReset) {
       return Row(
         children: [
           Expanded(
@@ -259,9 +279,9 @@ class _TimerScreenState extends State<TimerScreen> {
                   borderRadius: BorderRadius.circular(16),
                 ),
               ),
-              child: const Text(
-                '暂停',
-                style: TextStyle(fontSize: 18, color: Colors.white),
+              child: Text(
+                _isRunning ? '暂停' : '继续',
+                style: const TextStyle(fontSize: 18, color: Colors.white),
               ),
             ),
           ),
